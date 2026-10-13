@@ -1,0 +1,84 @@
+import json
+import requests
+
+def get_kalshi_prices():
+    """Fetches open event markets from Kalshi's public endpoint."""
+    url = "https://api.elections.kalshi.com/trade-api/v2/markets"
+    params = {"limit": 100, "status": "open"}
+    
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        if res.status_code == 200:
+            return res.json().get("markets", [])
+    except Exception as e:
+        print(f"[ERROR] Kalshi API request failed: {e}")
+    return []
+
+def get_polymarket_prices():
+    """Fetches open event markets from Polymarket's keyless Gamma API."""
+    url = "https://gamma-api.polymarket.com/markets"
+    params = {"limit": 100, "active": "true", "closed": "false"}
+    
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        print(f"[ERROR] Polymarket API request failed: {e}")
+    return []
+
+def scan_cross_platform_opportunities():
+    """Compares matched contracts across Kalshi and Polymarket for +EV pricing spreads."""
+    print("[*] Fetching live prediction market data...")
+    kalshi_markets = get_kalshi_prices()
+    poly_markets = get_polymarket_prices()
+    
+    print(f"[*] Loaded {len(kalshi_markets)} Kalshi markets and {len(poly_markets)} Polymarket markets.\n")
+    
+    opportunities = []
+
+    # Map Polymarket entries by keyword/slug matching
+    for k_mkt in kalshi_markets:
+        k_title = k_mkt.get("title", "").lower()
+        k_yes_ask = (k_mkt.get("yes_ask", 0) or 0) / 100.0  # Convert cents to dollars
+        k_yes_bid = (k_mkt.get("yes_bid", 0) or 0) / 100.0
+
+        if k_yes_ask == 0:
+            continue
+
+        for p_mkt in poly_markets:
+            p_question = p_mkt.get("question", "").lower()
+            
+            # Simple title overlap match (can be replaced with fuzzy matching)
+            if any(word in p_question for word in k_title.split()) and len(k_title) > 10:
+                p_prices_str = p_mkt.get("outcomePrices", "[]")
+                try:
+                    p_prices = json.loads(p_prices_str) if isinstance(p_prices_str, str) else p_prices_str
+                    p_yes_price = float(p_prices[0]) if p_prices else 0.0
+                except Exception:
+                    p_yes_price = 0.0
+
+                if p_yes_price == 0:
+                    continue
+
+                # Calculate price divergence (%)
+                price_diff = abs(k_yes_ask - p_yes_price)
+                if price_diff >= 0.05:  # Trigger on >= 5% probability spread
+                    opportunities.append({
+                        "kalshi_title": k_mkt.get("title"),
+                        "kalshi_yes_ask": f"${k_yes_ask:.2f}",
+                        "polymarket_title": p_mkt.get("question"),
+                        "polymarket_yes": f"${p_yes_price:.2f}",
+                        "divergence_pct": f"{price_diff * 100:.1f}%"
+                    })
+
+    # Display results
+    print(f"=== IDENTIFIED CROSS-PLATFORM OPPORTUNITIES ({len(opportunities)}) ===")
+    for opp in opportunities[:5]:  # Display top 5 matches
+        print(f"• Kalshi:      {opp['kalshi_title']} ({opp['kalshi_yes_ask']})")
+        print(f"  Polymarket:  {opp['polymarket_title']} ({opp['polymarket_yes']})")
+        print(f"  Spread Edge: {opp['divergence_pct']}")
+        print("-" * 60)
+
+if __name__ == "__main__":
+    scan_cross_platform_opportunities()
